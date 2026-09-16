@@ -1,0 +1,6 @@
+- [x] Checkpoint 1: StartReceiveLoop()方法在Connect成功后被调用
+- [x] Checkpoint 2: 波特率配置参数符合周立功官方规范
+- [x] Checkpoint 3: CAN初始化参数(acc_code, acc_mask, filter, mode)正确
+- [x] Checkpoint 4: 接收线程有正确的取消机制
+- [x] Checkpoint 5: 项目编译成功无错误
+- [x] Checkpoint 6: Disconnect方法正确清理资源并停止接收线程

@@ -1,0 +1,5 @@
+- [x] Checkpoint 1: 操作日志功能框支持水平拉伸（GridSplitter已添加）
+- [x] Checkpoint 2: 操作日志中不再显示"发送报文"和"接收报文"的Debug日志
+- [x] Checkpoint 3: CAN报文界面在烧录过程中能显示相关报文
+- [x] Checkpoint 4: 项目编译成功，无错误
+- [x] Checkpoint 5: 所有功能按预期工作
