@@ -1,5 +1,6 @@
 using System;
 using System.Buffers.Binary;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -86,7 +87,7 @@ namespace BOOTWR.Services
                     return false;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x50 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "SESSION响应超时");
                     return false;
@@ -142,7 +143,7 @@ namespace BOOTWR.Services
                     return false;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x51 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "SESSION_EXIT响应超时");
                     return false;
@@ -291,7 +292,7 @@ namespace BOOTWR.Services
                     return false;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x52 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "TC_CALIB_WRITE响应超时");
                     return false;
@@ -365,7 +366,7 @@ namespace BOOTWR.Services
                     return null;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x55 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "TC_CALIB_READ响应超时");
                     return null;
@@ -429,7 +430,7 @@ namespace BOOTWR.Services
                     return false;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x53 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "TC_CALIB_SAVE响应超时");
                     return false;
@@ -487,7 +488,7 @@ namespace BOOTWR.Services
                     return false;
                 }
 
-                if (!await WaitForResponseAsync())
+                if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x54 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "TC_CALIB_DEFAULTS响应超时");
                     return false;
@@ -561,7 +562,7 @@ namespace BOOTWR.Services
                     return null;
                 }
 
-                if (!await WaitForResponseAsync(TIMEOUT_MS))
+                if (!await WaitForResponseAsync(TIMEOUT_MS, new byte[] { 0x58 }))
                 {
                     SetError(CalibrationServiceError.Timeout, "TC_SAMPLE_READ响应超时");
                     return null;
@@ -605,7 +606,7 @@ namespace BOOTWR.Services
             }
         }
 
-        private async Task<bool> WaitForResponseAsync(int timeoutMs = 5000)
+        private async Task<bool> WaitForResponseAsync(int timeoutMs = 5000, byte[]? expectedResponses = null)
         {
             DateTime startTime = DateTime.Now;
             _receivedResponse = null;
@@ -615,13 +616,11 @@ namespace BOOTWR.Services
                 if (_cancellationTokenSource?.IsCancellationRequested ?? false)
                     throw new OperationCanceledException();
 
-                if (_canService.ReceiveMessage(out uint canId, out bool _, out byte[] data))
+                // 按响应命令字节条件消费，不匹配的帧保留在待匹配队列，供状态轮询等其他等待方使用
+                if (_canService.ReceiveMessageFiltered(_receiveId, expectedResponses, out _, out _, out byte[] data))
                 {
-                    if (canId == _receiveId)
-                    {
-                        _receivedResponse = data;
-                        return true;
-                    }
+                    _receivedResponse = data;
+                    return true;
                 }
 
                 await Task.Delay(1);
@@ -657,7 +656,15 @@ namespace BOOTWR.Services
 
         public void Cancel()
         {
-            _cancellationTokenSource?.Cancel();
+            // 内部 CTS 在每次操作结束后会被 Dispose；两次操作间隙调用时可能指向已释放实例，
+            // 需容忍 ObjectDisposedException。
+            try
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
     }
 }

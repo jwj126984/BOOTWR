@@ -26,6 +26,11 @@ namespace BOOTWR.ViewModels
         [ObservableProperty]
         private bool _isStatusLooping = false;
 
+        // 供自动标定测试窗口共享同一套 CAN/标定/日志服务
+        internal CanCommunicationService CanService => _canService;
+        internal CalibrationService CalibrationService => _calibrationService;
+        internal LogService LogService => _logService;
+
         public MainWindowViewModel()
         {
             _canService = new CanCommunicationService();
@@ -125,6 +130,7 @@ namespace BOOTWR.ViewModels
                               ?? BaudRates.FirstOrDefault(b => b.Name == "250 kbps");
             DeviceIndex = config.DeviceIndex;
             ChannelIndex = config.ChannelIndex;
+            IsTerminalResistanceEnabled = config.IsTerminalResistanceEnabled;
             UdsPhysicalAddress = config.UdsPhysicalAddress;
             UdsResponseAddress = config.UdsResponseAddress;
         }
@@ -143,6 +149,7 @@ namespace BOOTWR.ViewModels
                 SelectedBaudRateName = SelectedBaudRate?.Name ?? "250 kbps",
                 DeviceIndex = DeviceIndex,
                 ChannelIndex = ChannelIndex,
+                IsTerminalResistanceEnabled = IsTerminalResistanceEnabled,
                 UdsPhysicalAddress = UdsPhysicalAddress,
                 UdsResponseAddress = UdsResponseAddress
             };
@@ -282,6 +289,10 @@ namespace BOOTWR.ViewModels
 
         [ObservableProperty]
         private int _channelIndex;
+
+        /// <summary>连接 CAN FD 设备时是否使能终端电阻（0=断开，1=接入）。</summary>
+        [ObservableProperty]
+        private bool _isTerminalResistanceEnabled = true;
 
         [ObservableProperty]
         private bool _isConnected;
@@ -566,14 +577,16 @@ namespace BOOTWR.ViewModels
 
             try
             {
-                _logService.Info($"正在连接设备: {SelectedDeviceType.Name}, 通道: {ChannelIndex}, 波特率: {SelectedBaudRate.Name}");
+                _logService.Info($"正在连接设备: {SelectedDeviceType.Name}, 通道: {ChannelIndex}, 波特率: {SelectedBaudRate.Name}, 终端电阻: {(IsTerminalResistanceEnabled ? "使能" : "断开")}");
 
                 bool success = _canService.Connect(
                     SelectedDeviceType.Value,
                     DeviceIndex,
                     ChannelIndex,
                     SelectedBaudRate.Value,
-                    useCanFd: SelectedDeviceType.Name == "USBCANFD_200U");
+                    CanMode.Normal,
+                    useCanFd: SelectedDeviceType.Name == "USBCANFD_200U",
+                    enableTerminalResistance: IsTerminalResistanceEnabled);
 
                 if (success)
                 {
@@ -597,11 +610,27 @@ namespace BOOTWR.ViewModels
             if (!IsConnected)
                 return;
 
+            // 断开前停止并释放所有在途通讯（状态轮询定时器、刷写/SN/标定等待循环）
+            StopAllCommunications();
+
             _canService.Disconnect();
             IsConnected = false;
             IsCalibrationSessionOpen = false;
-            IsCalibrationSessionOpen = false;
             _logService.Info("CAN设备已断开连接");
+        }
+
+        /// <summary>
+        /// 停止并释放当前所有通讯活动：停止状态轮询定时器，取消刷写/SN/标定各服务的在途请求与等待循环。
+        /// 用于断开连接和测试失败等需要立即清理通讯线程的场景。
+        /// </summary>
+        private void StopAllCommunications()
+        {
+            StopStatusLoop();
+            _flashingService.Cancel();
+            _snService.Cancel();
+            _calibrationService.Cancel();
+            IsFlashing = false;
+            IsBusy = false;
         }
 
         [RelayCommand]
@@ -679,12 +708,15 @@ namespace BOOTWR.ViewModels
                 else
                 {
                     _logService.Error($"刷写失败: {_flashingService.ErrorMessage}");
+                    // 测试失败：停止并释放所有在途通讯线程
+                    StopAllCommunications();
                 }
             }
             catch (Exception ex)
             {
                 IsFlashing = false;
                 _logService.Error($"刷写异常: {ex.Message}");
+                StopAllCommunications();
             }
         }
 
@@ -708,6 +740,24 @@ namespace BOOTWR.ViewModels
         public void ClearMessages()
         {
             _messageManager.Clear();
+        }
+
+        [RelayCommand]
+        public void OpenAutoCalibration()
+        {
+            // 已打开时直接激活，避免重复弹窗
+            var existing = Application.Current.Windows.OfType<AutoCalibrationWindow>().FirstOrDefault();
+            if (existing != null)
+            {
+                existing.Activate();
+                return;
+            }
+
+            var window = new AutoCalibrationWindow(this)
+            {
+                Owner = Application.Current.MainWindow
+            };
+            window.Show();
         }
 
         [RelayCommand]
@@ -1320,11 +1370,15 @@ namespace BOOTWR.ViewModels
                     else
                     {
                         _logService.Error($"保存到Flash失败: {_calibrationService.ErrorMessage}");
+                        // 测试失败：停止并释放所有在途通讯线程
+                        StopAllCommunications();
                     }
                 }
                 else
                 {
                     _logService.Error($"一键标定失败: {_calibrationService.ErrorMessage}");
+                    // 测试失败：停止并释放所有在途通讯线程
+                    StopAllCommunications();
                 }
             }
             finally

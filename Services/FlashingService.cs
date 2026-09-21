@@ -210,7 +210,14 @@ namespace BOOTWR.Services
 
         public void Cancel()
         {
-            _cancellationTokenSource?.Cancel();
+            // 内部 CTS 在每次操作结束后会被 Dispose；操作间隙调用时可能指向已释放实例，需容忍 ObjectDisposedException
+            try
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
 
         public async Task<DeviceStatusInfo?> GetStatusAsync()
@@ -233,7 +240,7 @@ namespace BOOTWR.Services
                     return null;
                 }
 
-                if (!await WaitForResponseAsync(5000))
+                if (!await WaitForResponseAsync(5000, new byte[] { 0xF0 }))
                 {
                     SetError(FlashingError.Timeout, "GET_STATUS响应超时");
                     return null;
@@ -282,7 +289,7 @@ namespace BOOTWR.Services
                 return false;
             }
 
-            if (!await WaitForResponseAsync())
+            if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x50 }))
             {
                 SetError(FlashingError.Timeout, "SESSION响应超时");
                 return false;
@@ -317,7 +324,7 @@ namespace BOOTWR.Services
                 return false;
             }
 
-            if (!await WaitForResponseAsync())
+            if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x60 }))
             {
                 SetError(FlashingError.Timeout, "ERASE响应超时");
                 return false;
@@ -370,7 +377,7 @@ namespace BOOTWR.Services
 
         private async Task<bool> WaitForCompleteResponseAsync()
         {
-            if (!await WaitForResponseAsync(TIMEOUT_MS))
+            if (!await WaitForResponseAsync(TIMEOUT_MS, new byte[] { 0x65, 0x7F }))
             {
                 SetError(FlashingError.Timeout, "等待完成响应超时");
                 return false;
@@ -455,7 +462,7 @@ namespace BOOTWR.Services
                 return false;
             }
 
-            if (!await WaitForResponseAsync())
+            if (!await WaitForResponseAsync(expectedResponses: new byte[] { 0x70 }))
             {
                 SetError(FlashingError.Timeout, "COMMIT响应超时");
                 return false;
@@ -471,7 +478,7 @@ namespace BOOTWR.Services
             return true;
         }
 
-        private async Task<bool> WaitForResponseAsync(int timeoutMs = 5000)
+        private async Task<bool> WaitForResponseAsync(int timeoutMs = 5000, byte[]? expectedResponses = null)
         {
             DateTime startTime = DateTime.Now;
             _receivedResponse = null;
@@ -481,13 +488,11 @@ namespace BOOTWR.Services
                 if (_cancellationTokenSource?.IsCancellationRequested ?? false)
                     throw new OperationCanceledException();
 
-                if (_canService.ReceiveMessage(out uint canId, out bool _, out byte[] data))
+                // 按响应命令字节条件消费，不匹配的帧保留在待匹配队列，供标定读取等其他等待方使用
+                if (_canService.ReceiveMessageFiltered(_receiveId, expectedResponses, out _, out _, out byte[] data))
                 {
-                    if (canId == _receiveId)
-                    {
-                        _receivedResponse = data;
-                        return true;
-                    }
+                    _receivedResponse = data;
+                    return true;
                 }
 
                 await Task.Delay(1);

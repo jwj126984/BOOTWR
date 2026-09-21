@@ -551,7 +551,14 @@ namespace BOOTWR.Services
 
         public void Cancel()
         {
-            _cancellationTokenSource?.Cancel();
+            // 内部 CTS 在每次操作结束后会被 Dispose；操作间隙调用时可能指向已释放实例，需容忍 ObjectDisposedException
+            try
+            {
+                _cancellationTokenSource?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+            }
         }
     }
 }

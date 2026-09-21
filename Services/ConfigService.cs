@@ -10,6 +10,7 @@ namespace BOOTWR.Services
         public int DeviceIndex { get; set; } = 0;
         public int ChannelIndex { get; set; } = 0;
         public string SelectedBaudRateName { get; set; } = "250 kbps";
+        public bool IsTerminalResistanceEnabled { get; set; } = true;
         public string UdsPhysicalAddress { get; set; } = "7E0";
         public string UdsResponseAddress { get; set; } = "7E8";
     }

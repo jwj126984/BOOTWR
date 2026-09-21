@@ -42,6 +42,9 @@ namespace BOOTWR.Services
         private bool _isConnected = false;
         private object _lockObj = new object();
 
+        // 已从设备驱动接收、尚未被任何等待方消费的帧（按响应命令字节条件消费，避免并发等待方互吃响应）
+        private readonly List<(uint canId, bool isExtended, byte[] data)> _pendingFrames = new();
+
         public bool IsConnected => _isConnected;
 
         public event EventHandler<CanMessageReceivedEventArgs>? MessageReceived;
@@ -49,10 +52,10 @@ namespace BOOTWR.Services
 
         public bool Connect(CanDeviceType deviceType, int deviceIndex, int channelIndex, CanBaudRate baudRate, bool useCanFd = false)
         {
-            return Connect(deviceType, deviceIndex, channelIndex, baudRate, CanMode.Normal, useCanFd, 2000000);
+            return Connect(deviceType, deviceIndex, channelIndex, baudRate, CanMode.Normal, useCanFd, 2000000, true);
         }
 
-        public bool Connect(CanDeviceType deviceType, int deviceIndex, int channelIndex, CanBaudRate baudRate, CanMode mode, bool useCanFd = false, uint dataBitRate = 2000000)
+        public bool Connect(CanDeviceType deviceType, int deviceIndex, int channelIndex, CanBaudRate baudRate, CanMode mode, bool useCanFd = false, uint dataBitRate = 2000000, bool enableTerminalResistance = true)
         {
             lock (_lockObj)
             {
@@ -89,8 +92,9 @@ namespace BOOTWR.Services
                         return false;
                     }
 
+                    // 终端电阻（0=断开，1=接入），仅 CAN FD 设备支持软件配置；按实际通道索引设置
                     string resistancePath = string.Format("{0}/initenal_resistance", channelIndex);
-                    uint setResistanceResult = ZLGCAN.ZCAN_SetValue(_deviceHandle, resistancePath, "1");
+                    uint setResistanceResult = ZLGCAN.ZCAN_SetValue(_deviceHandle, resistancePath, enableTerminalResistance ? "1" : "0");
                     if (setResistanceResult != 1)
                     {
                         ZLGCAN.ZCAN_CloseDevice(_deviceHandle);
@@ -248,6 +252,8 @@ namespace BOOTWR.Services
                 if (!_isConnected || _channelHandle == IntPtr.Zero)
                     return false;
 
+                _pendingFrames.Clear();
+
                 uint result = ZLGCAN.ZCAN_ClearBuffer(_channelHandle);
                 return result == 1;
             }
@@ -313,69 +319,126 @@ namespace BOOTWR.Services
 
         public bool ReceiveMessage(out uint canId, out bool isExtendedId, out byte[] data)
         {
-            canId = 0;
-            isExtendedId = false;
-            data = Array.Empty<byte>();
-
             lock (_lockObj)
             {
-                if (!_isConnected || _channelHandle == IntPtr.Zero)
-                    return false;
+                DrainPendingLocked();
 
-                uint count = ZLGCAN.ZCAN_GetReceiveNum(_channelHandle, 0);
-                if (count > 0)
+                if (_pendingFrames.Count == 0)
                 {
-                    IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(ZLGCAN.ZCAN_Receive_Data)));
-                    try
-                    {
-                        uint result = ZLGCAN.ZCAN_Receive(_channelHandle, ptr, 1, 0);
-                        if (result > 0)
-                        {
-                            var receiveData = Marshal.PtrToStructure<ZLGCAN.ZCAN_Receive_Data>(ptr);
-                            canId = receiveData.frame.can_id & 0x7FFFFFFFU;
-                            isExtendedId = (receiveData.frame.can_id & 0x80000000U) != 0;
-                            byte dlc = receiveData.frame.can_dlc;
-                            if (dlc > 8)
-                                dlc = 8;
-                            data = new byte[dlc];
-                            Array.Copy(receiveData.frame.data, data, dlc);
-                            RaiseMessageReceived(canId, isExtendedId, data);
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(ptr);
-                    }
+                    canId = 0;
+                    isExtendedId = false;
+                    data = Array.Empty<byte>();
+                    return false;
                 }
 
-                count = ZLGCAN.ZCAN_GetReceiveNum(_channelHandle, 1);
-                if (count > 0)
+                // 原始语义：取最早的一帧
+                (uint cid, bool ext, byte[] bytes) = _pendingFrames[0];
+                _pendingFrames.RemoveAt(0);
+
+                canId = cid;
+                isExtendedId = ext;
+                data = bytes;
+                return true;
+            }
+        }
+
+        /// <summary>
+        /// 条件接收：仅当存在 canId 匹配且首字节命中 expectedFirstBytes 的帧时消费并返回；
+        /// 未命中时帧保留在待匹配队列，供其他等待方消费。用于多服务并发等待时不互吃响应。
+        /// </summary>
+        public bool ReceiveMessageFiltered(uint expectedId, byte[]? expectedFirstBytes, out uint canId, out bool isExtendedId, out byte[] data)
+        {
+            lock (_lockObj)
+            {
+                DrainPendingLocked();
+
+                for (int i = 0; i < _pendingFrames.Count; i++)
                 {
-                    IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(ZLGCAN.ZCAN_ReceiveFD_Data)));
-                    try
+                    var f = _pendingFrames[i];
+                    if (f.canId == expectedId &&
+                        (expectedFirstBytes == null ||
+                         (f.data.Length > 0 && expectedFirstBytes.Contains(f.data[0]))))
                     {
-                        uint result = ZLGCAN.ZCAN_ReceiveFD(_channelHandle, ptr, 1, 0);
-                        if (result > 0)
-                        {
-                            var receiveData = Marshal.PtrToStructure<ZLGCAN.ZCAN_ReceiveFD_Data>(ptr);
-                            canId = receiveData.frame.can_id & 0x7FFFFFFFU;
-                            isExtendedId = (receiveData.frame.can_id & 0x80000000U) != 0;
-                            byte len = receiveData.frame.len;
-                            data = new byte[len];
-                            Array.Copy(receiveData.frame.data, data, len);
-                            RaiseMessageReceived(canId, isExtendedId, data);
-                            return true;
-                        }
-                    }
-                    finally
-                    {
-                        Marshal.FreeHGlobal(ptr);
+                        _pendingFrames.RemoveAt(i);
+                        canId = f.canId;
+                        isExtendedId = f.isExtended;
+                        data = f.data;
+                        return true;
                     }
                 }
             }
 
+            canId = 0;
+            isExtendedId = false;
+            data = Array.Empty<byte>();
             return false;
+        }
+
+        /// <summary>从设备驱动接收所有可用的帧，存入待匹配队列并触发消息事件。须在 _lockObj 内调用。</summary>
+        private void DrainPendingLocked()
+        {
+            if (!_isConnected || _channelHandle == IntPtr.Zero)
+                return;
+
+            while (true)
+            {
+                uint count = ZLGCAN.ZCAN_GetReceiveNum(_channelHandle, 0);
+                if (count == 0)
+                    break;
+
+                IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(ZLGCAN.ZCAN_Receive_Data)));
+                try
+                {
+                    uint result = ZLGCAN.ZCAN_Receive(_channelHandle, ptr, 1, 0);
+                    if (result == 0)
+                        break;
+
+                    var receiveData = Marshal.PtrToStructure<ZLGCAN.ZCAN_Receive_Data>(ptr);
+                    uint frameCanId = receiveData.frame.can_id & 0x7FFFFFFFU;
+                    bool frameExt = (receiveData.frame.can_id & 0x80000000U) != 0;
+                    byte dlc = receiveData.frame.can_dlc;
+                    if (dlc > 8)
+                        dlc = 8;
+                    byte[] frameData = new byte[dlc];
+                    Array.Copy(receiveData.frame.data, frameData, dlc);
+
+                    _pendingFrames.Add((frameCanId, frameExt, frameData));
+                    RaiseMessageReceived(frameCanId, frameExt, frameData);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
+
+            while (true)
+            {
+                uint count = ZLGCAN.ZCAN_GetReceiveNum(_channelHandle, 1);
+                if (count == 0)
+                    break;
+
+                IntPtr ptr = Marshal.AllocHGlobal(Marshal.SizeOf(typeof(ZLGCAN.ZCAN_ReceiveFD_Data)));
+                try
+                {
+                    uint result = ZLGCAN.ZCAN_ReceiveFD(_channelHandle, ptr, 1, 0);
+                    if (result == 0)
+                        break;
+
+                    var receiveData = Marshal.PtrToStructure<ZLGCAN.ZCAN_ReceiveFD_Data>(ptr);
+                    uint frameCanId = receiveData.frame.can_id & 0x7FFFFFFFU;
+                    bool frameExt = (receiveData.frame.can_id & 0x80000000U) != 0;
+                    byte len = receiveData.frame.len;
+                    byte[] frameData = new byte[len];
+                    Array.Copy(receiveData.frame.data, frameData, len);
+
+                    _pendingFrames.Add((frameCanId, frameExt, frameData));
+                    RaiseMessageReceived(frameCanId, frameExt, frameData);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(ptr);
+                }
+            }
         }
 
         private void RaiseMessageReceived(uint canId, bool isExtendedId, byte[] data)

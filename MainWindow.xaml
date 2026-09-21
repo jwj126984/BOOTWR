@@ -134,6 +134,14 @@
                         <Button Style="{StaticResource ToolbarButton}"
                                 Content="清空报文" Command="{Binding ClearMessagesCommand}"/>
                     </StackPanel>
+
+                    <Rectangle Width="1" Height="20" Fill="{StaticResource DividerBrush}" Margin="6,0"/>
+
+                    <!-- 自动标定测试组 -->
+                    <StackPanel Orientation="Horizontal" Margin="6,0">
+                        <Button Style="{StaticResource ToolbarButton}"
+                                Content="自动标定测试" Command="{Binding OpenAutoCalibrationCommand}"/>
+                    </StackPanel>
                 </StackPanel>
 
                 <!-- 右侧：状态徽章 -->
@@ -201,6 +209,17 @@
                                     </Grid.ColumnDefinitions>
                                     <Label Grid.Column="0" Content="通道索引" Style="{StaticResource FormLabelLeft}"/>
                                     <TextBox Grid.Column="1" Text="{Binding ChannelIndex}" Margin="0"/>
+                                </Grid>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="70"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="终端电阻" Style="{StaticResource FormLabelLeft}"/>
+                                    <CheckBox Grid.Column="1" Content="使能（CAN FD）"
+                                              IsChecked="{Binding IsTerminalResistanceEnabled}"
+                                              VerticalAlignment="Center" Margin="0,2,0,0"
+                                              ToolTip="连接 CAN FD 设备时使能终端电阻；USBCAN-Ⅰ 不支持软件配置，需硬件跳线"/>
                                 </Grid>
                             </StackPanel>
                         </Border>
@@ -869,7 +888,7 @@
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="●" Foreground="{StaticResource SuccessBrush}" FontSize="10"
                                VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <TextBlock Text="CAN刷写上位机 v1.09" VerticalAlignment="Center"/>
+                    <TextBlock Text="CAN刷写上位机 v1.10" VerticalAlignment="Center" Foreground="White"/>
                 </StackPanel>
             </StatusBarItem>
             <Separator Background="#FF334155"/>
