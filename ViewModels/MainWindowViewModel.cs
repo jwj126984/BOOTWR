@@ -585,7 +585,7 @@ namespace BOOTWR.ViewModels
                     ChannelIndex,
                     SelectedBaudRate.Value,
                     CanMode.Normal,
-                    useCanFd: SelectedDeviceType.Name == "USBCANFD_200U",
+                    useCanFd: SelectedDeviceType.Name == "USBCANFD-200U",
                     enableTerminalResistance: IsTerminalResistanceEnabled);
 
                 if (success)

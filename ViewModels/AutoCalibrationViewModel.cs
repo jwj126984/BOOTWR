@@ -110,6 +110,7 @@ namespace BOOTWR.ViewModels
                 int[] afes = SelectedTarget == CalibrationTarget.BMU ? new[] { 0, 1, 2 } : new[] { 0 };
                 string targetName = SelectedTarget == CalibrationTarget.BMU ? "BMU" : "HCU";
                 log.Info($"自动标定开始：目标={targetName}，AFE={string.Join("/", afes.Select(a => $"AFE{a}"))}");
+                
 
                 for (int i = 0; i < afes.Length; i++)
                 {
@@ -291,8 +292,18 @@ namespace BOOTWR.ViewModels
         /// </summary>
         private async Task<bool> WriteKbForAfeAsync(int afe, float[][] collected)
         {
+            bool hucflag = SelectedTarget == CalibrationTarget.HCU && afe == 0;
             var log = _mainVm.LogService;
-            double[] ys = VoltageLevelsMv.Select(mv => mv * 0.001 * 51 + 0.1).ToArray();
+            double[] ys = new double[VoltageLevelsMv.Length];
+            if (hucflag)
+            {
+                 ys = VoltageLevelsMv.Select(mv => mv * 0.001 * 51).ToArray();
+            }
+            else
+            {
+                 ys = VoltageLevelsMv.Select(mv => mv * 0.001 * 51 + 0.1).ToArray();
+            }
+        
             double[] kValues = new double[8];
             double[] bValues = new double[8];
 
