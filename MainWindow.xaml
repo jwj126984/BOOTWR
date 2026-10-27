@@ -256,6 +256,37 @@
                                         <ComboBoxItem Content="BCMS" IsSelected="{Binding SelectedDeviceMode, Converter={local:EnumEqualsConverter}, ConverterParameter={x:Static vm:MainWindowViewModel+DeviceMode.BCMS}}"/>
                                     </ComboBox>
                                 </Grid>
+                                <Grid Margin="0,8,0,0"
+                                      Visibility="{Binding IsBmuMode, Converter={local:BooleanToVisibilityConverter}}">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="70"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Label Grid.Column="0" Content="烧录数量" Style="{StaticResource FormLabelLeft}"/>
+                                    <TextBox Grid.Column="1" Text="{Binding BmuDeviceCount}" Margin="0"
+                                             IsEnabled="{Binding !IsFlashing}"
+                                             ToolTip="BMU广播烧录产品数量，应答ID按响应地址依次+1（物理ID广播全体接收）"/>
+                                </Grid>
+                                <ItemsControl ItemsSource="{Binding BmuDeviceSlots}" Margin="0,8,0,0"
+                                              Visibility="{Binding IsBmuMode, Converter={local:BooleanToVisibilityConverter}}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="76"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding IndexText}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12"/>
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                    <TextBlock Text="{Binding StateText}" Foreground="{StaticResource TextPrimaryBrush}" FontSize="12" Margin="0,0,6,0"/>
+                                                    <TextBlock Text="{Binding ErrorMessage}" Foreground="#cf222e" FontSize="12"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               Visibility="{Binding IsOk, Converter={local:BooleanToVisibilityConverter TrueValue=Collapsed, FalseValue=Visible}}"/>
+                                                </StackPanel>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
                             </StackPanel>
                         </Border>
 
@@ -269,7 +300,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Label Grid.Column="0" Content="物理地址" Style="{StaticResource FormLabelLeft}"/>
-                                    <TextBox Grid.Column="1" Text="{Binding UdsPhysicalAddress}" Margin="0"
+                                    <TextBox Grid.Column="1" Text="{Binding UdsPhysicalAddress, UpdateSourceTrigger=PropertyChanged}" Margin="0"
                                              ToolTip="UDS物理地址（十六进制，如7E0）"/>
                                 </Grid>
                                 <Grid>
@@ -278,7 +309,7 @@
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Label Grid.Column="0" Content="响应地址" Style="{StaticResource FormLabelLeft}"/>
-                                    <TextBox Grid.Column="1" Text="{Binding UdsResponseAddress}" Margin="0"
+                                    <TextBox Grid.Column="1" Text="{Binding UdsResponseAddress, UpdateSourceTrigger=PropertyChanged}" Margin="0"
                                              ToolTip="UDS响应地址（十六进制，如7E8）"/>
                                 </Grid>
                             </StackPanel>
@@ -442,7 +473,8 @@
                 <TabControl Grid.Row="2">
                     <!-- CAN 报文 Tab -->
                     <TabItem Header="CAN 报文">
-                        <DataGrid ItemsSource="{Binding CanMessages}">
+                        <DataGrid ItemsSource="{Binding CanMessages}"
+                                  local:AutoScrollBehavior.AutoScroll="True">
                             <DataGrid.Columns>
                                 <DataGridTextColumn Header="时间" Binding="{Binding TimestampText}" Width="140"/>
                                 <DataGridTextColumn Header="方向" Binding="{Binding DirectionText}" Width="70">
@@ -888,7 +920,7 @@
                 <StackPanel Orientation="Horizontal">
                     <TextBlock Text="●" Foreground="{StaticResource SuccessBrush}" FontSize="10"
                                VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <TextBlock Text="CAN刷写上位机 v1.10.1" VerticalAlignment="Center" Foreground="White"/>
+                    <TextBlock Text="CAN刷写上位机 v1.10.2" VerticalAlignment="Center" Foreground="White"/>
                 </StackPanel>
             </StatusBarItem>
             <Separator Background="#FF334155"/>

@@ -22,6 +22,7 @@ namespace BOOTWR.ViewModels
         private readonly MessageManager _messageManager;
         private readonly DispatcherTimer _saveTimer;
         private readonly DispatcherTimer _statusTimer;
+        private readonly UdsAddressSettings _udsAddress = new UdsAddressSettings();
 
         [ObservableProperty]
         private bool _isStatusLooping = false;
@@ -34,9 +35,9 @@ namespace BOOTWR.ViewModels
         public MainWindowViewModel()
         {
             _canService = new CanCommunicationService();
-            _flashingService = new FlashingService(_canService);
-            _snService = new SnService(_canService);
-            _calibrationService = new CalibrationService(_canService);
+            _flashingService = new FlashingService(_canService, _udsAddress);
+            _snService = new SnService(_canService, _udsAddress);
+            _calibrationService = new CalibrationService(_canService, _udsAddress);
             _logService = new LogService();
             _messageManager = new MessageManager();
 
@@ -133,6 +134,7 @@ namespace BOOTWR.ViewModels
             IsTerminalResistanceEnabled = config.IsTerminalResistanceEnabled;
             UdsPhysicalAddress = config.UdsPhysicalAddress;
             UdsResponseAddress = config.UdsResponseAddress;
+            BmuDeviceCount = Math.Max(1, config.DeviceCount);
         }
 
         private void MainWindowViewModel_PropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -151,7 +153,8 @@ namespace BOOTWR.ViewModels
                 ChannelIndex = ChannelIndex,
                 IsTerminalResistanceEnabled = IsTerminalResistanceEnabled,
                 UdsPhysicalAddress = UdsPhysicalAddress,
-                UdsResponseAddress = UdsResponseAddress
+                UdsResponseAddress = UdsResponseAddress,
+                DeviceCount = BmuDeviceCount
             };
             ConfigService.SaveConfig(config);
         }
@@ -319,6 +322,27 @@ namespace BOOTWR.ViewModels
 
         [ObservableProperty]
         private string _udsResponseAddress = "7E8";
+
+        // 界面修改物理地址/响应地址后立即同步到共享地址源，所有 Service 的发送/接收ID 随之全局生效
+        partial void OnUdsPhysicalAddressChanged(string value)
+        {
+            if (uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out uint addr))
+                _udsAddress.PhysicalAddress = addr;
+        }
+
+        partial void OnUdsResponseAddressChanged(string value)
+        {
+            if (uint.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out uint addr))
+                _udsAddress.ResponseAddress = addr;
+        }
+
+        [ObservableProperty]
+        private int _bmuDeviceCount = 1;
+
+        [ObservableProperty]
+        private ObservableCollection<FlashSlot> _bmuDeviceSlots = new();
+
+        public bool IsBmuMode => SelectedDeviceMode == DeviceMode.BMU;
 
         [ObservableProperty]
         private ObservableCollection<LogMessage> _logMessages = new ObservableCollection<LogMessage>();
@@ -566,6 +590,13 @@ namespace BOOTWR.ViewModels
         [ObservableProperty]
         private DeviceMode _selectedDeviceMode = DeviceMode.BMU;
 
+        partial void OnSelectedDeviceModeChanged(DeviceMode value)
+        {
+            OnPropertyChanged(nameof(IsBmuMode));
+            if (value == DeviceMode.BCMS)
+                BmuDeviceSlots.Clear();
+        }
+
         [RelayCommand]
         public void Connect()
         {
@@ -689,6 +720,13 @@ namespace BOOTWR.ViewModels
                     return;
                 }
 
+                // BMU：广播烧录（广播发送ID + 应答基址依次+1，失败容错继续）
+                if (SelectedDeviceMode == DeviceMode.BMU)
+                {
+                    await RunBmuBroadcastFlashingAsync(physicalAddr, responseAddr);
+                    return;
+                }
+
                 _flashingService.SendId = physicalAddr;
                 _flashingService.ReceiveId = responseAddr;
 
@@ -716,6 +754,46 @@ namespace BOOTWR.ViewModels
             {
                 IsFlashing = false;
                 _logService.Error($"刷写异常: {ex.Message}");
+                StopAllCommunications();
+            }
+        }
+
+        /// <summary>BMU 广播烧录：广播发送ID发帧全体接收，应答ID = 应答基址 + 序号；失败只记录、流程继续。</summary>
+        private async Task RunBmuBroadcastFlashingAsync(uint physicalAddr, uint responseAddr)
+        {
+            if (BmuDeviceCount < 1)
+            {
+                _logService.Error("烧录数量必须≥1");
+                return;
+            }
+
+            _flashingService.SendId = physicalAddr;      // 广播发送ID
+            _flashingService.ReceiveId = responseAddr;   // 应答基址
+            _messageManager.SetUdsBroadcastFilter(physicalAddr, responseAddr, BmuDeviceCount);
+
+            BmuDeviceSlots.Clear();
+            IsFlashing = true;
+            FlashingProgress = 0;
+
+            bool success = await _flashingService.StartBroadcastFlashingAsync(BmuDeviceCount);
+
+            IsFlashing = false;
+
+            foreach (var s in _flashingService.Slots)
+                BmuDeviceSlots.Add(s);
+
+            int ok = _flashingService.Slots.Count(s => s.IsOk);
+            int fail = _flashingService.Slots.Count(s => !s.IsOk);
+
+            if (ok > 0)
+            {
+                _logService.Info($"BMU广播刷写完成：成功 {ok} 台，失败 {fail} 台");
+                foreach (var s in _flashingService.Slots.Where(x => !x.IsOk))
+                    _logService.Error($"  BMU#{s.Index}: {s.ErrorMessage}");
+            }
+            else
+            {
+                _logService.Error($"BMU广播刷写失败：{_flashingService.ErrorMessage}");
                 StopAllCommunications();
             }
         }

@@ -32,8 +32,7 @@ namespace BOOTWR.Services
     public class CalibrationService
     {
         private readonly CanCommunicationService _canService;
-        private uint _sendId = 0x7E0;
-        private uint _receiveId = 0x7E8;
+        private readonly UdsAddressSettings _address;
         private const int TIMEOUT_MS = 30000;
         private bool _isSessionOpen = false;
         private CalibrationServiceError _error = CalibrationServiceError.None;
@@ -48,23 +47,24 @@ namespace BOOTWR.Services
 
         public uint SendId
         {
-            get => _sendId;
-            set => _sendId = value;
+            get => _address.PhysicalAddress;
+            set => _address.PhysicalAddress = value;
         }
 
         public uint ReceiveId
         {
-            get => _receiveId;
-            set => _receiveId = value;
+            get => _address.ResponseAddress;
+            set => _address.ResponseAddress = value;
         }
 
         public bool IsSessionOpen => _isSessionOpen;
         public CalibrationServiceError Error => _error;
         public string ErrorMessage => _errorMessage;
 
-        public CalibrationService(CanCommunicationService canService)
+        public CalibrationService(CanCommunicationService canService, UdsAddressSettings address)
         {
             _canService = canService;
+            _address = address;
         }
 
         public async Task<bool> OpenSessionAsync()
@@ -81,7 +81,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x10, 0x42, 0x4D, 0x53, 0x31, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送SESSION请求失败");
                     return false;
@@ -137,7 +137,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送SESSION_EXIT请求失败");
                     return false;
@@ -286,7 +286,7 @@ namespace BOOTWR.Services
 
                 Array.Copy(floatBytes, 0, request, 4, 4);
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送TC_CALIB_WRITE请求失败");
                     return false;
@@ -360,7 +360,7 @@ namespace BOOTWR.Services
                 request[2] = (byte)afeIndex;
                 request[3] = (byte)tcIndex;
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送TC_CALIB_READ请求失败");
                     return null;
@@ -424,7 +424,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送TC_CALIB_SAVE请求失败");
                     return false;
@@ -482,7 +482,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x14, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送TC_CALIB_DEFAULTS请求失败");
                     return false;
@@ -556,7 +556,7 @@ namespace BOOTWR.Services
                 request[2] = (byte)afeIndex;
                 request[3] = (byte)tcIndex;
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(CalibrationServiceError.ConnectionFailed, "发送TC_SAMPLE_READ请求失败");
                     return null;
@@ -617,7 +617,7 @@ namespace BOOTWR.Services
                     throw new OperationCanceledException();
 
                 // 按响应命令字节条件消费，不匹配的帧保留在待匹配队列，供状态轮询等其他等待方使用
-                if (_canService.ReceiveMessageFiltered(_receiveId, expectedResponses, out _, out _, out byte[] data))
+                if (_canService.ReceiveMessageFiltered(ReceiveId, expectedResponses, out _, out _, out byte[] data))
                 {
                     _receivedResponse = data;
                     return true;

@@ -18,8 +18,7 @@ namespace BOOTWR.Services
     public class SnService
     {
         private readonly CanCommunicationService _canService;
-        private uint _sendId = 0x7E0;
-        private uint _receiveId = 0x7E8;
+        private readonly UdsAddressSettings _address;
         private const int TIMEOUT_MS = 30000;
         private SnServiceError _error = SnServiceError.None;
         private string _errorMessage = string.Empty;
@@ -31,14 +30,14 @@ namespace BOOTWR.Services
 
         public uint SendId
         {
-            get => _sendId;
-            set => _sendId = value;
+            get => _address.PhysicalAddress;
+            set => _address.PhysicalAddress = value;
         }
 
         public uint ReceiveId
         {
-            get => _receiveId;
-            set => _receiveId = value;
+            get => _address.ResponseAddress;
+            set => _address.ResponseAddress = value;
         }
 
         public SnServiceError Error => _error;
@@ -47,9 +46,10 @@ namespace BOOTWR.Services
         public event EventHandler<string>? SnRead;
         public event EventHandler<bool>? SnWritten;
 
-        public SnService(CanCommunicationService canService)
+        public SnService(CanCommunicationService canService, UdsAddressSettings address)
         {
             _canService = canService;
+            _address = address;
         }
 
         public async Task<bool> OpenSessionAsync()
@@ -66,7 +66,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x10, 0x42, 0x4D, 0x53, 0x31, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(SnServiceError.ConnectionFailed, "发送SESSION请求失败");
                     return false;
@@ -118,7 +118,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x11, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(SnServiceError.ConnectionFailed, "发送SESSION_EXIT请求失败");
                     return false;
@@ -175,7 +175,7 @@ namespace BOOTWR.Services
                     request[1] = (byte)(offset & 0xFF);
                     request[2] = (byte)Math.Min(READ_CHUNK_SIZE, SN_MAX_LENGTH - offset);
 
-                    if (!_canService.SendMessage(_sendId, request))
+                    if (!_canService.SendMessage(SendId, request))
                     {
                         SetError(SnServiceError.ConnectionFailed, "发送SN_READ请求失败");
                         return string.Empty;
@@ -272,7 +272,7 @@ namespace BOOTWR.Services
                     request[2] = (byte)chunkSize;
                     Array.Copy(snBytes, offset, request, 3, chunkSize);
 
-                    if (!_canService.SendMessage(_sendId, request))
+                    if (!_canService.SendMessage(SendId, request))
                     {
                         SetError(SnServiceError.ConnectionFailed, "发送SN_WRITE请求失败");
                         return false;
@@ -309,7 +309,7 @@ namespace BOOTWR.Services
                     request[1] = (byte)(snBytes.Length & 0xFF);
                     request[2] = 0x01;
 
-                    if (!_canService.SendMessage(_sendId, request))
+                    if (!_canService.SendMessage(SendId, request))
                     {
                         SetError(SnServiceError.ConnectionFailed, "发送SN_WRITE终止符失败");
                         return false;
@@ -360,7 +360,7 @@ namespace BOOTWR.Services
 
                 if (_canService.ReceiveMessage(out uint canId, out bool _, out byte[] data))
                 {
-                    if (canId == _receiveId)
+                    if (canId == ReceiveId)
                     {
                         _receivedResponse = data;
                         return true;
@@ -402,7 +402,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x13, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(SnServiceError.ConnectionFailed, "发送SN_SAVE请求失败");
                     return false;
@@ -460,7 +460,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x19, address, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(SnServiceError.ConnectionFailed, "发送ADDR_WRITE请求失败");
                     return false;
@@ -512,7 +512,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0x1A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(SnServiceError.ConnectionFailed, "发送ADDR_READ请求失败");
                     return null;

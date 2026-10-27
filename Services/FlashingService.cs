@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace BOOTWR.Services
 {
@@ -65,9 +66,47 @@ namespace BOOTWR.Services
         }
     }
 
+    /// <summary>广播烧录中的一个产品槽：应答ID = 应答基址 + 序号，追踪该产品的确认进度与失败信息。</summary>
+    public partial class FlashSlot : ObservableObject
+    {
+        public int Index { get; set; }
+        public uint ResponseId { get; set; }
+        public byte AckedCmd { get; set; }
+        public FlashingError Error { get; set; }
+
+        [ObservableProperty] private string _stateText = "待命";
+        [ObservableProperty] private string _errorMessage = string.Empty;
+
+        public bool IsOk => Error == FlashingError.None;
+        public string IndexText => $"#{Index}  0x{ResponseId:X3}";
+
+        public void SetAck(byte cmd)
+        {
+            AckedCmd = cmd;
+            Error = FlashingError.None;
+            ErrorMessage = string.Empty;
+            StateText = cmd switch
+            {
+                0x50 => "会话OK",
+                0x60 => "擦除OK",
+                0x65 => "烧录OK",
+                0x70 => "提交OK",
+                _ => "已确认"
+            };
+        }
+
+        public void SetError(FlashingError err, string message)
+        {
+            Error = err;
+            ErrorMessage = message;
+            StateText = "失败";
+        }
+    }
+
     public class FlashingService
     {
         private readonly CanCommunicationService _canService;
+        private readonly UdsAddressSettings _address;
         private byte[] _flashData = Array.Empty<byte>();
         private uint _crc32;
         private FlashingState _state = FlashingState.Idle;
@@ -76,21 +115,20 @@ namespace BOOTWR.Services
         private int _currentProgress = 0;
         private object _lockObj = new object();
         private CancellationTokenSource? _cancellationTokenSource;
+        private FlashSlot[] _slots = Array.Empty<FlashSlot>();
 
-        private uint _sendId = 0x7E0;
-        private uint _receiveId = 0x7E8;
         private const int TIMEOUT_MS = 30000;
 
         public uint SendId
         {
-            get => _sendId;
-            set => _sendId = value;
+            get => _address.PhysicalAddress;
+            set => _address.PhysicalAddress = value;
         }
 
         public uint ReceiveId
         {
-            get => _receiveId;
-            set => _receiveId = value;
+            get => _address.ResponseAddress;
+            set => _address.ResponseAddress = value;
         }
 
         private const byte ECU_CAN_PROG_RES_OK = 0x00;
@@ -108,13 +146,15 @@ namespace BOOTWR.Services
         public FlashingError Error => _error;
         public string ErrorMessage => _errorMessage;
         public int CurrentProgress => _currentProgress;
+        public FlashSlot[] Slots => _slots;
 
         public event EventHandler<FlashingStateChangedEventArgs>? StateChanged;
         public event EventHandler<ProgressChangedEventArgs>? ProgressChanged;
 
-        public FlashingService(CanCommunicationService canService)
+        public FlashingService(CanCommunicationService canService, UdsAddressSettings address)
         {
             _canService = canService;
+            _address = address;
         }
 
         public bool LoadFlashFile(string filePath)
@@ -220,6 +260,149 @@ namespace BOOTWR.Services
             }
         }
 
+        /// <summary>
+        /// BMU 广播烧录：广播发送ID发一帧，总线上所有产品同时接收；每个产品用「应答基址+序号」的应答ID回帧区分。
+        /// 失败容错：某产品在任一步失败(负响应/无效/超时)只记录该槽、不中断流程，直到全部完成或全部失败。
+        /// </summary>
+        public async Task<bool> StartBroadcastFlashingAsync(int deviceCount)
+        {
+            if (!_canService.IsConnected)
+            {
+                SetError(FlashingError.ConnectionFailed, "CAN设备未连接");
+                return false;
+            }
+
+            if (_flashData.Length == 0)
+            {
+                SetError(FlashingError.FileError, "未加载刷写文件");
+                return false;
+            }
+
+            if (deviceCount < 1)
+            {
+                SetError(FlashingError.InvalidResponse, "烧录数量必须≥1");
+                return false;
+            }
+
+            _slots = Enumerable.Range(0, deviceCount)
+                .Select(i => new FlashSlot { Index = i, ResponseId = ReceiveId + (uint)i })
+                .ToArray();
+            var active = _slots.ToList();
+
+            _cancellationTokenSource = new CancellationTokenSource();
+
+            try
+            {
+                _canService.ClearBuffer();
+
+                // 1 SESSION：广播一帧，等存活产品全部 0x50
+                ChangeState(FlashingState.Session);
+                _canService.SendMessage(SendId, new byte[] { 0x10, 0x42, 0x4D, 0x53, 0x31, 0, 0, 0 });
+                await WaitAllAckAsync(active, 0x50, TIMEOUT_MS);
+                if (active.Count == 0) { SetError(FlashingError.Timeout, "全部产品失败，流程提前终止"); return false; }
+
+                // 2 ERASE：广播 长度+CRC，等存活产品全部 0x60
+                ChangeState(FlashingState.Erase);
+                _canService.SendMessage(SendId, BuildEraseFrame());
+                await WaitAllAckAsync(active, 0x60, TIMEOUT_MS);
+                if (active.Count == 0) { SetError(FlashingError.Timeout, "全部产品失败，流程提前终止"); return false; }
+
+                // 3 数据帧：广播发送，存活产品同时接收，无应答
+                ChangeState(FlashingState.SendingData);
+                await SendDataFramesAsync();
+
+                // 4 COMPLETE：等存活产品全部 0x65 并校验各自接收长度
+                ChangeState(FlashingState.WaitingForResponse);
+                await WaitAllAckAsync(active, 0x65, TIMEOUT_MS, checkLength: true);
+                if (active.Count == 0) { SetError(FlashingError.Timeout, "全部产品失败，流程提前终止"); return false; }
+
+                // 5 COMMIT：广播，等存活产品全部 0x70
+                ChangeState(FlashingState.Commit);
+                _canService.SendMessage(SendId, new byte[] { 0x30, 0xA5, 0x5A, 0xA5, 0x5A, 0, 0, 0 });
+                await WaitAllAckAsync(active, 0x70, TIMEOUT_MS);
+
+                ChangeState(FlashingState.Completed);
+                SetProgress(100);
+
+                return active.Count > 0;   // 至少一台完成 COMMIT 即视为整轮完成
+            }
+            catch (OperationCanceledException)
+            {
+                SetError(FlashingError.Timeout, "操作被取消");
+                return false;
+            }
+            catch (Exception ex)
+            {
+                SetError(FlashingError.UnknownError, ex.Message);
+                return false;
+            }
+            finally
+            {
+                _cancellationTokenSource?.Dispose();
+            }
+        }
+
+        /// <summary>
+        /// 等待存活产品在本阶段全部应答。失败(负响应/无效/超时)只剔除该槽、不终止流程，
+        /// 直到存活槽全部确认，或全部失败(active 为空)由调用方判定是否提前停。
+        /// </summary>
+        private async Task WaitAllAckAsync(List<FlashSlot> active, byte expectCmd, int timeoutMs, bool checkLength = false)
+        {
+            var deadline = DateTime.Now.AddMilliseconds(timeoutMs);
+
+            while (active.Count > 0)
+            {
+                if (_cancellationTokenSource?.IsCancellationRequested ?? false)
+                    throw new OperationCanceledException();
+
+                if (DateTime.Now > deadline)
+                {
+                    foreach (var s in active)
+                        s.SetError(FlashingError.Timeout, "等待应答超时");
+                    active.Clear();
+                    return;
+                }
+
+                if (_canService.ReceiveMessage(out uint canId, out _, out byte[] data))
+                {
+                    var slot = active.FirstOrDefault(x => x.ResponseId == canId);
+                    if (slot != null)
+                    {
+                        bool negative = data.Length > 0 && data[0] == 0x7F;
+                        bool bad = data.Length == 0
+                            || negative
+                            || data[0] != expectCmd
+                            || (checkLength && data.Length >= 5 &&
+                                (uint)(data[2] << 16 | data[3] << 8 | data[4]) != _flashData.Length);
+                        if (bad)
+                        {
+                            string reason = negative
+                                ? $"消极响应 0x{(data.Length > 1 ? data[1] : 0):X2}"
+                                : $"期望0x{expectCmd:X2} 收到0x{(data.Length > 0 ? data[0] : 0):X2}";
+                            slot.SetError(FlashingError.InvalidResponse, reason);
+                            active.Remove(slot);
+                            continue;
+                        }
+                        slot.SetAck(expectCmd);
+                    }
+                }
+
+                await Task.Delay(1);
+            }
+        }
+
+        private byte[] BuildEraseFrame()
+        {
+            int size = _flashData.Length;
+            return new byte[]
+            {
+                0x20,
+                (byte)((size >> 16) & 0xFF), (byte)((size >> 8) & 0xFF), (byte)(size & 0xFF),
+                (byte)((_crc32 >> 24) & 0xFF), (byte)((_crc32 >> 16) & 0xFF),
+                (byte)((_crc32 >> 8) & 0xFF), (byte)(_crc32 & 0xFF)
+            };
+        }
+
         public async Task<DeviceStatusInfo?> GetStatusAsync()
         {
             if (!_canService.IsConnected)
@@ -234,7 +417,7 @@ namespace BOOTWR.Services
             {
                 byte[] request = { 0xF0 };
 
-                if (!_canService.SendMessage(_sendId, request))
+                if (!_canService.SendMessage(SendId, request))
                 {
                     SetError(FlashingError.ConnectionFailed, "发送GET_STATUS请求失败");
                     return null;
@@ -283,7 +466,7 @@ namespace BOOTWR.Services
         {
             byte[] request = { 0x10, 0x42, 0x4D, 0x53, 0x31, 0x00, 0x00, 0x00 };
 
-            if (!_canService.SendMessage(_sendId, request))
+            if (!_canService.SendMessage(SendId, request))
             {
                 SetError(FlashingError.ConnectionFailed, "发送SESSION请求失败");
                 return false;
@@ -318,7 +501,7 @@ namespace BOOTWR.Services
             request[6] = (byte)((_crc32 >> 8) & 0xFF);
             request[7] = (byte)(_crc32 & 0xFF);
 
-            if (!_canService.SendMessage(_sendId, request))
+            if (!_canService.SendMessage(SendId, request))
             {
                 SetError(FlashingError.ConnectionFailed, "发送ERASE请求失败");
                 return false;
@@ -357,7 +540,7 @@ namespace BOOTWR.Services
                 data[0] = (byte)(0x70 + (count % 16));
                 Array.Copy(_flashData, offset, data, 1, chunkSize);
 
-                if (!_canService.SendMessage(_sendId, data, false, false))
+                if (!_canService.SendMessage(SendId, data, false, false))
                 {
                     SetError(FlashingError.ConnectionFailed, "发送数据帧失败");
                     return false;
@@ -456,7 +639,7 @@ namespace BOOTWR.Services
         {
             byte[] request = { 0x30, 0xA5, 0x5A, 0xA5, 0x5A, 0x00, 0x00, 0x00 };
 
-            if (!_canService.SendMessage(_sendId, request))
+            if (!_canService.SendMessage(SendId, request))
             {
                 SetError(FlashingError.ConnectionFailed, "发送COMMIT请求失败");
                 return false;
@@ -489,7 +672,7 @@ namespace BOOTWR.Services
                     throw new OperationCanceledException();
 
                 // 按响应命令字节条件消费，不匹配的帧保留在待匹配队列，供标定读取等其他等待方使用
-                if (_canService.ReceiveMessageFiltered(_receiveId, expectedResponses, out _, out _, out byte[] data))
+                if (_canService.ReceiveMessageFiltered(ReceiveId, expectedResponses, out _, out _, out byte[] data))
                 {
                     _receivedResponse = data;
                     return true;

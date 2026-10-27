@@ -46,6 +46,7 @@ namespace BOOTWR.Services
         private object _lockObj = new object();
         private uint _udsSendId = 0x7E0;
         private uint _udsReceiveId = 0x7E8;
+        private uint[]? _udsReceiveRange = null;
 
         public ObservableCollection<CanMessageItem> Messages => _messages;
 
@@ -56,17 +57,30 @@ namespace BOOTWR.Services
         {
             _udsSendId = sendId;
             _udsReceiveId = receiveId;
+            _udsReceiveRange = null;
+        }
+
+        /// <summary>广播模式：应答ID为 应答基址+序号 的连续范围。</summary>
+        public void SetUdsBroadcastFilter(uint sendId, uint receiveBase, int count)
+        {
+            _udsSendId = sendId;
+            _udsReceiveRange = Enumerable.Range(0, count).Select(i => receiveBase + (uint)i).ToArray();
         }
 
         public void SetDefaultFilter()
         {
             _udsSendId = 0x7E0;
             _udsReceiveId = 0x7E8;
+            _udsReceiveRange = null;
         }
 
         private bool IsUdsMessage(uint canId)
         {
-            return canId == _udsSendId || canId == _udsReceiveId;
+            if (canId == _udsSendId)
+                return true;
+            if (_udsReceiveRange != null)
+                return _udsReceiveRange.Contains(canId);
+            return canId == _udsReceiveId;
         }
 
         public void AddMessage(CanMessageItem message)

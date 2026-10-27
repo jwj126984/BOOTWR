@@ -13,6 +13,7 @@ namespace BOOTWR.Services
         public bool IsTerminalResistanceEnabled { get; set; } = true;
         public string UdsPhysicalAddress { get; set; } = "7E0";
         public string UdsResponseAddress { get; set; } = "7E8";
+        public int DeviceCount { get; set; } = 1;
     }
 
     public static class ConfigService
